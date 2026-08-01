@@ -72,31 +72,54 @@ jobs:
               playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); await page.locator("#email").waitFor({ state: "visible" }); }'
               playwright-cli -s="$session" fill '#email' "$username"
               playwright-cli -s="$session" fill '#password' "$password"
-              playwright-cli -s="$session" run-code 'async page => {
-                const loginResponsePromise = page.waitForResponse(response => response.request().method() === "POST", { timeout: 30000 });
-                await page.locator("button[type=submit]").click();
-                const loginResponse = await loginResponsePromise;
-                await page.waitForLoadState("networkidle");
-                if (new URL(page.url()).pathname.startsWith("/login")) {
-                  const body = await loginResponse.json().catch(() => ({}));
-                  const message = typeof body.message === "string" ? `: ${body.message}` : "";
-                  throw new Error(`Login failed with HTTP ${loginResponse.status()}${message}`);
-                }
-              }'
+              playwright-cli -s="$session" click 'button[type="submit"]'
+              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+
+              current_url="$(playwright-cli --raw -s="$session" eval 'location.href')"
+              if [[ "$current_url" == *"/login"* ]]; then
+                echo "::error::Account ${account} remained on the login page after submitting credentials"
+                playwright-cli -s="$session" requests || true
+                exit 1
+              fi
 
               # The dashboard link establishes the www.quya.org SSO cookie.
               playwright-cli -s="$session" click 'getByRole("link", { name: "积分中心", exact: true })'
-              playwright-cli -s="$session" run-code 'async page => {
-                await page.waitForLoadState("networkidle");
-                const cookies = await page.context().cookies("https://www.quya.org");
-                if (!cookies.some(cookie => cookie.name === "sub2apipay_session")) {
-                  throw new Error("The points-center SSO cookie was not created");
-                }
-              }'
+              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+
+              points_cookie="$(playwright-cli --raw -s="$session" cookie-get sub2apipay_session)"
+              if [[ "$points_cookie" != sub2apipay_session=* ]]; then
+                echo "::error::Account ${account} did not receive the points-center SSO cookie"
+                exit 1
+              fi
 
               playwright-cli -s="$session" goto 'https://www.quya.org/points?theme=light&lang=zh'
               playwright-cli -s="$session" run-code 'async page => {
                 await page.waitForLoadState("networkidle");
+                await page.waitForFunction(() => {
+                  const rules = document.querySelector("#pointsRules");
+                  const balance = document.querySelector("#balance");
+                  const ledger = document.querySelector("#ledger");
+                  return rules && !rules.textContent?.includes("正在加载积分规则") &&
+                    balance && balance.textContent?.trim() !== "--" &&
+                    ledger && !ledger.textContent?.includes("正在加载");
+                }, undefined, { timeout: 30000 });
+              }'
+
+              page_ready="$(playwright-cli --raw -s="$session" eval '() => {
+                const rules = document.querySelector("#pointsRules");
+                const balance = document.querySelector("#balance");
+                const ledger = document.querySelector("#ledger");
+                return Boolean(rules && !rules.textContent?.includes("正在加载积分规则") &&
+                  balance && balance.textContent?.trim() !== "--" &&
+                  ledger && !ledger.textContent?.includes("正在加载"));
+              }')"
+              if [[ "$page_ready" != "true" ]]; then
+                echo "::error::Account ${account} points page did not finish loading"
+                playwright-cli -s="$session" console error || true
+                exit 1
+              fi
+
+              playwright-cli -s="$session" run-code 'async page => {
                 const button = page.locator("#checkinBtn");
                 await button.waitFor({ state: "visible", timeout: 30000 });
                 const alreadyCheckedIn = await button.isDisabled() && (await button.textContent())?.trim() === "今日已签到";
@@ -106,6 +129,13 @@ jobs:
                   return element instanceof HTMLButtonElement && element.disabled && element.textContent?.trim() === "今日已签到";
                 }, undefined, { timeout: 30000 });
               }'
+
+              checkin_complete="$(playwright-cli --raw -s="$session" eval 'el => el.disabled && el.textContent?.trim() === "今日已签到"' '#checkinBtn')"
+              if [[ "$checkin_complete" != "true" ]]; then
+                echo "::error::Account ${account} check-in did not reach the completed state"
+                playwright-cli -s="$session" console error || true
+                exit 1
+              fi
 
               if [[ "$RECORD_BALANCE" == "true" ]]; then
                 balance="$(playwright-cli --raw -s="$session" eval 'el => el.textContent.trim()' '#balance')"
