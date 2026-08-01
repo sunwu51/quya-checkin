@@ -165,6 +165,9 @@ jobs:
 
           failed=0
           account_number=0
+          # GitHub invokes bash with -e. Disable it only in the parent loop so
+          # one failed account does not prevent the remaining accounts running.
+          set +e
 
           while IFS= read -r account_json; do
             account_number=$((account_number + 1))
@@ -182,6 +185,7 @@ jobs:
             fi
           done < <(jq -c '.[]' <<< "$QUYA_ACCOUNTS")
 
+          set -e
           exit "$failed"
 
       - name: Commit weekly balances
