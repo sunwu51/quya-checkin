@@ -1,0 +1,163 @@
+name: Quya daily check-in
+
+on:
+  schedule:
+    # 09:00 Asia/Shanghai (GitHub cron uses UTC).
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: quya-daily-check-in
+  cancel-in-progress: false
+
+jobs:
+  check-in:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      QUYA_ACCOUNTS: ${{ secrets.QUYA_ACCOUNTS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Resolve Asia/Shanghai calendar
+        id: calendar
+        shell: bash
+        run: |
+          echo "date=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
+          if [[ "$(TZ=Asia/Shanghai date +%u)" == "7" ]]; then
+            echo "record_balance=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "record_balance=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install playwright-cli and Chromium
+        run: |
+          npm install --global @playwright/cli@0.1.17
+          playwright-cli install-browser chromium --with-deps --only-shell
+
+      - name: Check in all accounts
+        shell: bash
+        env:
+          CHECKIN_DATE: ${{ steps.calendar.outputs.date }}
+          RECORD_BALANCE: ${{ steps.calendar.outputs.record_balance }}
+        run: |
+          set -uo pipefail
+          mkdir -p screenshots
+
+          run_account() {
+            local account="$1"
+            local username="$2"
+            local password="$3"
+            local session="quya-${account}"
+            local result=0
+
+            if [[ -z "$username" || -z "$password" ]]; then
+              echo "::error::Account ${account} has an empty username or password"
+              return 1
+            fi
+
+            (
+              set -e
+              playwright-cli -s="$session" open https://api.quya.org/
+              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); await page.locator("#email").waitFor({ state: "visible" }); }'
+              playwright-cli -s="$session" fill '#email' "$username"
+              playwright-cli -s="$session" fill '#password' "$password"
+              playwright-cli -s="$session" click 'button[type="submit"]'
+              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+
+              # The dashboard link establishes the www.quya.org SSO cookie.
+              playwright-cli -s="$session" click 'getByRole("link", { name: "积分中心", exact: true })'
+              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+
+              playwright-cli -s="$session" goto 'https://www.quya.org/points?theme=light&lang=zh'
+              playwright-cli -s="$session" run-code 'async page => {
+                await page.waitForLoadState("networkidle");
+                const button = page.locator("#checkinBtn");
+                await button.waitFor({ state: "visible", timeout: 30000 });
+                const alreadyCheckedIn = await button.isDisabled() && (await button.textContent())?.trim() === "今日已签到";
+                if (!alreadyCheckedIn) await button.click();
+                await page.waitForFunction(() => {
+                  const element = document.querySelector("#checkinBtn");
+                  return element instanceof HTMLButtonElement && element.disabled && element.textContent?.trim() === "今日已签到";
+                }, undefined, { timeout: 30000 });
+              }'
+
+              if [[ "$RECORD_BALANCE" == "true" ]]; then
+                balance="$(playwright-cli --raw -s="$session" eval 'el => el.textContent.trim()' '#balance')"
+                printf '%s account-%s %s\n' "$CHECKIN_DATE" "$account" "$balance" >> log.txt
+              fi
+            ) || result=$?
+
+            playwright-cli -s="$session" screenshot \
+              --filename="screenshots/account-${account}-${GITHUB_RUN_ID}.png" \
+              --full-page || true
+            playwright-cli -s="$session" close || true
+            return "$result"
+          }
+
+          if ! jq -e '
+            type == "array" and
+            length > 0 and
+            all(.[];
+              ((.username | type) == "string" and (.username | length) > 0) and
+              ((.password | type) == "string" and (.password | length) > 0)
+            )
+          ' >/dev/null <<< "$QUYA_ACCOUNTS"; then
+            echo "::error::QUYA_ACCOUNTS must be a non-empty JSON array containing username and password strings"
+            exit 1
+          fi
+
+          failed=0
+          account_number=0
+
+          while IFS= read -r account_json; do
+            account_number=$((account_number + 1))
+            username="$(jq -r '.username' <<< "$account_json")"
+            password="$(jq -r '.password' <<< "$account_json")"
+
+            # Extracted values are not automatically masked as individual secrets.
+            echo "::add-mask::$username"
+            echo "::add-mask::$password"
+
+            run_account "$account_number" "$username" "$password" || failed=1
+          done < <(jq -c '.[]' <<< "$QUYA_ACCOUNTS")
+
+          exit "$failed"
+
+      - name: Commit weekly balances
+        if: ${{ success() && steps.calendar.outputs.record_balance == 'true' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add log.txt
+
+          if git diff --cached --quiet; then
+            echo "No balance changes to commit"
+            exit 0
+          fi
+
+          git commit \
+            -m "chore: record weekly Quya balances" \
+            -m "Agent: codex"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quya-check-in-${{ github.run_number }}
+          path: screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 7
