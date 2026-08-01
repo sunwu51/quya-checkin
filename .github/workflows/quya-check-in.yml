@@ -72,12 +72,27 @@ jobs:
               playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); await page.locator("#email").waitFor({ state: "visible" }); }'
               playwright-cli -s="$session" fill '#email' "$username"
               playwright-cli -s="$session" fill '#password' "$password"
-              playwright-cli -s="$session" click 'button[type="submit"]'
-              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+              playwright-cli -s="$session" run-code 'async page => {
+                const loginResponsePromise = page.waitForResponse(response => response.request().method() === "POST", { timeout: 30000 });
+                await page.locator("button[type=submit]").click();
+                const loginResponse = await loginResponsePromise;
+                await page.waitForLoadState("networkidle");
+                if (new URL(page.url()).pathname.startsWith("/login")) {
+                  const body = await loginResponse.json().catch(() => ({}));
+                  const message = typeof body.message === "string" ? `: ${body.message}` : "";
+                  throw new Error(`Login failed with HTTP ${loginResponse.status()}${message}`);
+                }
+              }'
 
               # The dashboard link establishes the www.quya.org SSO cookie.
               playwright-cli -s="$session" click 'getByRole("link", { name: "积分中心", exact: true })'
-              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+              playwright-cli -s="$session" run-code 'async page => {
+                await page.waitForLoadState("networkidle");
+                const cookies = await page.context().cookies("https://www.quya.org");
+                if (!cookies.some(cookie => cookie.name === "sub2apipay_session")) {
+                  throw new Error("The points-center SSO cookie was not created");
+                }
+              }'
 
               playwright-cli -s="$session" goto 'https://www.quya.org/points?theme=light&lang=zh'
               playwright-cli -s="$session" run-code 'async page => {
@@ -96,7 +111,8 @@ jobs:
                 balance="$(playwright-cli --raw -s="$session" eval 'el => el.textContent.trim()' '#balance')"
                 printf '%s account-%s %s\n' "$CHECKIN_DATE" "$account" "$balance" >> log.txt
               fi
-            ) || result=$?
+            )
+            result=$?
 
             playwright-cli -s="$session" screenshot \
               --filename="screenshots/account-${account}-${GITHUB_RUN_ID}.png" \
@@ -129,7 +145,11 @@ jobs:
             echo "::add-mask::$username"
             echo "::add-mask::$password"
 
-            run_account "$account_number" "$username" "$password" || failed=1
+            run_account "$account_number" "$username" "$password"
+            account_result=$?
+            if [[ "$account_result" -ne 0 ]]; then
+              failed=1
+            fi
           done < <(jq -c '.[]' <<< "$QUYA_ACCOUNTS")
 
           exit "$failed"
