@@ -34,9 +34,14 @@ jobs:
         shell: bash
         run: |
           echo "date=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
-          if [[ "$(TZ=Asia/Shanghai date +%u)" == "7" ]]; then
+          epoch_day=$(($(date +%s) / 86400))
+          cycle_remainder=$((epoch_day % 8))
+          echo "cycle_remainder=$cycle_remainder" >> "$GITHUB_OUTPUT"
+          if [[ "$cycle_remainder" == "1" ]]; then
+            echo "skip_checkin=true" >> "$GITHUB_OUTPUT"
             echo "record_balance=true" >> "$GITHUB_OUTPUT"
           else
+            echo "skip_checkin=false" >> "$GITHUB_OUTPUT"
             echo "record_balance=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -50,6 +55,7 @@ jobs:
         env:
           CHECKIN_DATE: ${{ steps.calendar.outputs.date }}
           RECORD_BALANCE: ${{ steps.calendar.outputs.record_balance }}
+          SKIP_CHECKIN: ${{ steps.calendar.outputs.skip_checkin }}
         run: |
           set -uo pipefail
           mkdir -p screenshots
@@ -119,22 +125,26 @@ jobs:
                 exit 1
               fi
 
-              playwright-cli -s="$session" run-code 'async page => {
-                const button = page.locator("#checkinBtn");
-                await button.waitFor({ state: "visible", timeout: 30000 });
-                const alreadyCheckedIn = await button.isDisabled() && (await button.textContent())?.trim() === "今日已签到";
-                if (!alreadyCheckedIn) await button.click();
-                await page.waitForFunction(() => {
-                  const element = document.querySelector("#checkinBtn");
-                  return element instanceof HTMLButtonElement && element.disabled && element.textContent?.trim() === "今日已签到";
-                }, undefined, { timeout: 30000 });
-              }'
+              if [[ "$SKIP_CHECKIN" == "true" ]]; then
+                echo "Account ${account}: skip day (epoch day modulo 8 equals 1)"
+              else
+                playwright-cli -s="$session" run-code 'async page => {
+                  const button = page.locator("#checkinBtn");
+                  await button.waitFor({ state: "visible", timeout: 30000 });
+                  const alreadyCheckedIn = await button.isDisabled() && (await button.textContent())?.trim() === "今日已签到";
+                  if (!alreadyCheckedIn) await button.click();
+                  await page.waitForFunction(() => {
+                    const element = document.querySelector("#checkinBtn");
+                    return element instanceof HTMLButtonElement && element.disabled && element.textContent?.trim() === "今日已签到";
+                  }, undefined, { timeout: 30000 });
+                }'
 
-              checkin_complete="$(playwright-cli --raw -s="$session" eval 'el => el.disabled && el.textContent?.trim() === "今日已签到"' '#checkinBtn')"
-              if [[ "$checkin_complete" != "true" ]]; then
-                echo "::error::Account ${account} check-in did not reach the completed state"
-                playwright-cli -s="$session" console error || true
-                exit 1
+                checkin_complete="$(playwright-cli --raw -s="$session" eval 'el => el.disabled && el.textContent?.trim() === "今日已签到"' '#checkinBtn')"
+                if [[ "$checkin_complete" != "true" ]]; then
+                  echo "::error::Account ${account} check-in did not reach the completed state"
+                  playwright-cli -s="$session" console error || true
+                  exit 1
+                fi
               fi
 
               if [[ "$RECORD_BALANCE" == "true" ]]; then
@@ -188,7 +198,7 @@ jobs:
           set -e
           exit "$failed"
 
-      - name: Commit weekly balances
+      - name: Commit skip-day balances
         if: ${{ success() && steps.calendar.outputs.record_balance == 'true' }}
         shell: bash
         run: |
@@ -202,7 +212,7 @@ jobs:
           fi
 
           git commit \
-            -m "chore: record weekly Quya balances" \
+            -m "chore: record skip-day Quya balances" \
             -m "Agent: codex"
           git pull --rebase origin "$GITHUB_REF_NAME"
           git push origin "HEAD:$GITHUB_REF_NAME"

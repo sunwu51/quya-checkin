@@ -19,7 +19,15 @@ Add or remove objects in this Secret to change the account count; the workflow d
 
 The workflow runs every day at 09:00 Asia/Shanghai and can also be started manually from the Actions page. Each account gets a fresh headless browser session. Screenshots are uploaded as a GitHub Actions artifact and retained for seven days.
 
-On Sundays in Asia/Shanghai, it also reads `span#balance` after check-in and appends one line per account to `log.txt`:
+The check-in schedule uses this UTC Unix-day calculation:
+
+```text
+floor(current Unix timestamp / 86400) % 8
+```
+
+When the remainder is `1`, the workflow deliberately skips check-in. It still logs in, fully loads the points page, reads `span#balance`, takes a screenshot, appends one line per account to `log.txt`, and pushes the updated log. On the other seven days it checks in normally.
+
+The balance log uses this format:
 
 ```text
 2026-08-02 account-1 123
@@ -27,10 +35,10 @@ On Sundays in Asia/Shanghai, it also reads `span#balance` after check-in and app
 2026-08-02 account-3 789
 ```
 
-The account labels deliberately omit email addresses because the repository is public. The weekly log is committed and pushed only when all configured accounts complete successfully. Extracted usernames and passwords are explicitly masked in the Actions log.
+The account labels deliberately omit email addresses because the repository is public. The skip-day log is committed and pushed only when all configured accounts complete successfully. Extracted usernames and passwords are explicitly masked in the Actions log.
 
 The workflow treats an already-disabled `今日已签到` button as success, so manually rerunning it on the same day is safe.
 
 After login, the workflow briefly opens the dashboard's `积分中心` link before navigating to the public points URL. That link sets the `www.quya.org` SSO cookie; going straight from the dashboard to `www.quya.org/points` returns HTTP 401.
 
-The workflow needs **Settings > Actions > General > Workflow permissions > Read and write permissions**. A protected default branch must also allow pushes from `github-actions[bot]`, otherwise the weekly commit step will fail.
+The workflow needs **Settings > Actions > General > Workflow permissions > Read and write permissions**. A protected default branch must also allow pushes from `github-actions[bot]`, otherwise the skip-day commit step will fail.
