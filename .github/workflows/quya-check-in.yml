@@ -88,9 +88,22 @@ jobs:
                 exit 1
               fi
 
-              # The dashboard link establishes the www.quya.org SSO cookie.
-              playwright-cli -s="$session" click 'getByRole("link", { name: "积分中心", exact: true })'
-              playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); }'
+              # Navigate to the points-center link directly so dashboard announcements cannot block the click.
+              playwright-cli -s="$session" run-code 'async page => {
+                const link = page.getByRole("link", { name: "积分中心", exact: true });
+                await link.waitFor({ state: "visible", timeout: 30000 });
+                const href = await link.evaluate(element => element.href);
+                if (!href) throw new Error("Points-center link has no href");
+                await page.goto(href, { waitUntil: "domcontentloaded" });
+
+                const deadline = Date.now() + 30000;
+                while (Date.now() < deadline) {
+                  const cookies = await page.context().cookies();
+                  if (cookies.some(cookie => cookie.name === "sub2apipay_session")) return;
+                  await page.waitForTimeout(500);
+                }
+                throw new Error("Timed out waiting for points-center SSO cookie");
+              }'
 
               points_cookie="$(playwright-cli --raw -s="$session" cookie-get sub2apipay_session)"
               if [[ "$points_cookie" != sub2apipay_session=* ]]; then
