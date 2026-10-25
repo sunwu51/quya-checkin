@@ -74,7 +74,7 @@ jobs:
 
             (
               set -e
-              playwright-cli -s="$session" open https://api.quya.org/
+              playwright-cli -s="$session" open https://api.yunqiao.me/dashboard
               playwright-cli -s="$session" run-code 'async page => { await page.waitForLoadState("networkidle"); await page.locator("#email").waitFor({ state: "visible" }); }'
               playwright-cli -s="$session" fill '#email' "$username"
               playwright-cli -s="$session" fill '#password' "$password"
@@ -111,7 +111,7 @@ jobs:
                 exit 1
               fi
 
-              playwright-cli -s="$session" goto 'https://www.quya.org/points?theme=light&lang=zh'
+              playwright-cli -s="$session" goto 'https://www.yunqiao.me/points?theme=light&lang=zh'
               playwright-cli -s="$session" run-code 'async page => {
                 await page.waitForLoadState("networkidle");
                 await page.waitForFunction(() => {

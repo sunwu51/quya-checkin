@@ -39,6 +39,6 @@ The account labels deliberately omit email addresses because the repository is p
 
 The workflow treats an already-disabled `今日已签到` button as success, so manually rerunning it on the same day is safe.
 
-After login, the workflow briefly opens the dashboard's `积分中心` link before navigating to the public points URL. That link sets the `www.quya.org` SSO cookie; going straight from the dashboard to `www.quya.org/points` returns HTTP 401.
+After login, the workflow briefly opens the dashboard's `积分中心` link before navigating to the public points URL. That link sets the `www.yunqiao.me` SSO cookie; going straight from the dashboard to `www.yunqiao.me/points` returns HTTP 401.
 
 The workflow needs **Settings > Actions > General > Workflow permissions > Read and write permissions**. A protected default branch must also allow pushes from `github-actions[bot]`, otherwise the skip-day commit step will fail.
